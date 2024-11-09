@@ -33,10 +33,10 @@ tokenize_datasets = tokenize_datasets.remove_columns(["question", "answer"])
 # print(f'Test: {tokenize_datasets["test"].shape}')
 # print(tokenize_datasets)
 
-output_dir = f"./dialogue-summary-training-{str(get_time())}"
+output_dir = f"./ckpt/dialogue-summary-training-{str(get_time())}"
 
 lora_config = LoraConfig(
-    r=32,  # rank 32,
+    r=32,  # rank 32
     lora_alpha=32,  ## LoRA Scaling factor
     target_modules=[
         "q",
@@ -48,19 +48,18 @@ lora_config = LoraConfig(
 )
 
 peft_model = get_peft_model(original_model, lora_config)
-
+peft_model = peft_model.to("cuda")
 # print(print_number_of_trainable_model_parameters(peft_model))
 
-output_dir = f"./dialogue-summary-training-{str(get_time())}"
+output_dir = f"./ckpt/dialogue-summary-training-{str(get_time())}"
 ## this is we are again back to the hugging face trainer module
 peft_training_args = TrainingArguments(
     output_dir=output_dir,
     auto_find_batch_size=True,
     learning_rate=1e-3,
-    num_train_epochs=1,
     logging_steps=1,
-    max_steps=1,
-    report_to="none",  ## can be wandb, but we are reporint to noe
+    max_steps=1000,
+    report_to="wandb",  ## can be wandb, but we are reporint to noe
 )
 
 ## this is same except we are using PEFT model instead of regular
@@ -70,16 +69,16 @@ peft_trainer = Trainer(
 
 peft_trainer.train()
 
-peft_model_path = './peft-dialogue-summary-checkpoint-local'
+peft_model_path = './ckpt/peft-dialogue-summary-checkpoint-local'
 
 peft_trainer.model.save_pretrained(peft_model_path)
 tokenizer.save_pretrained(peft_model_path)
 
-peft_model_base = AutoModelForSeq2SeqLM.from_pretrained('google/flan-t5-base', torch_dtype=torch.bfloat16)
-tokenizer = AutoTokenizer.from_pretrained('google/flan-t5-base')
+peft_model_base = AutoModelForSeq2SeqLM.from_pretrained(model, torch_dtype=torch.bfloat16)
+tokenizer = AutoTokenizer.from_pretrained(model)
 
 peft_model = PeftModel.from_pretrained(peft_model_base, 
-                                      './peft-dialogue-summary-checkpoint-local',
+                                      './ckpt/peft-dialogue-summary-checkpoint-local',
                                       torch_dtype=torch.bfloat16,
                                       is_trainable=False)
 
@@ -87,13 +86,7 @@ index = 200 ## randomly pick index
 dialogue = data['test'][index]['question']
 human_baseline_summary = data['test'][index]['answer']
 
-prompt = f"""
-Summarize the following conversation.
-
-{dialogue}
-
-Summary:
-"""
+prompt = f"""{dialogue}"""
 
 input_ids = tokenizer(prompt, return_tensors='pt').input_ids
 peft_model = peft_model.to('cuda')
@@ -116,12 +109,7 @@ original_model_summaries = []
 peft_model_summaries = []
 
 for _, dialogue in enumerate(dialogue):
-    prompt = f"""
-    Summarize the following conversations. 
-
-    {dialogue}
-
-    Summary: """
+    prompt = f"""{dialogue}"""
 
     input_ids = tokenizer(prompt, return_tensors='pt').input_ids
     input_ids = input_ids.to('cuda')
