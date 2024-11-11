@@ -1,8 +1,7 @@
 import pandas as pd
-import datasets
-from datasets import load_dataset
+from datasets import load_dataset, DatasetDict
 import torch
-from utils import print_number_of_trainable_model_parameters, get_time
+from utils import print_number_of_trainable_model_parameters, get_time, TaskPrefixDataCollator, TaskPrefixTrainer
 from dataset import get_tokenize_function
 import time
 from peft import LoraConfig, get_peft_model, TaskType, PeftModel
@@ -14,20 +13,61 @@ from transformers import (
     TrainingArguments,
     Trainer,
 )
+from dataset import GSM8KDatasetLoader
+from metrics import compute_metrics_equation, compute_equation_acc
 
-dataset = "pbcong/gsm8k_step_by_step"
-data = load_dataset(dataset)
+dataset_loader = GSM8KDatasetLoader()
+datasets = dataset_loader.load_from_json()
+train_llm_rationales, train_llm_labels = dataset_loader.load_llm_preds(split='train')
+test_llm_rationales, test_llm_labels = dataset_loader.load_llm_preds(split='test')
+print(len(datasets), len(train_llm_labels))
+datasets['train'] = datasets['train'].add_column('llm_label', train_llm_labels)
+datasets['test'] = datasets['test'].add_column('llm_label', test_llm_labels)
+datasets['train'] = datasets['train'].add_column('rationale', train_llm_rationales)
+datasets['test'] = datasets['test'].add_column('rationale', test_llm_rationales)
+train_valid_datasets = datasets['train'].train_test_split(test_size=0.1, seed=0)
+datasets = DatasetDict({
+            'train': train_valid_datasets['train'],
+            'valid': train_valid_datasets['test'],
+            'test': datasets['test'],
+        })
+
+def tokenize_function(examples):
+    model_inputs = tokenizer(['predict: ' + text for text in examples['input']], max_length=1000, truncation=True)
+    expl_model_inputs = tokenizer(['explain: ' + text for text in examples['input']], max_length=1000, truncation=True)
+    model_inputs['expl_input_ids'] = expl_model_inputs['input_ids']
+    model_inputs['expl_attention_mask'] = expl_model_inputs['attention_mask']
+
+    with tokenizer.as_target_tokenizer():
+        label_output_encodings = tokenizer(examples['label'], max_length=256, truncation=True)
+        rationale_output_encodings = tokenizer(examples['rationale'], max_length=256, truncation=True)
+
+    model_inputs['labels'] = label_output_encodings['input_ids']
+    model_inputs['aux_labels'] = rationale_output_encodings['input_ids']
+
+    return model_inputs
 
 model = "google/flan-t5-base"
+tokenizer = AutoTokenizer.from_pretrained(model)
+
+datasets['train'] = datasets['train'].remove_columns('label')
+datasets['train'] = datasets['train'].add_column('label', datasets['train']['llm_label'])
+
+print(datasets['train'].column_names)
+tokenized_datasets = datasets.map(
+            tokenize_function,
+            remove_columns=['input', 'rationale', 'label', 'llm_label'],
+            batched=True
+        )
+compute_metrics = compute_metrics_equation(tokenizer)
+
+
 original_model = AutoModelForSeq2SeqLM.from_pretrained(
     model, torch_dtype=torch.bfloat16
 )
-tokenizer = AutoTokenizer.from_pretrained(model)
 
-print_number_of_trainable_model_parameters(original_model)
+# print_number_of_trainable_model_parameters(original_model)
 
-tokenize_datasets = data.map(get_tokenize_function(tokenizer), batched=True)
-tokenize_datasets = tokenize_datasets.remove_columns(["question", "answer"])
 
 # print(f'Training: {tokenize_datasets["train"].shape}')
 # print(f'Test: {tokenize_datasets["test"].shape}')
@@ -58,12 +98,26 @@ peft_training_args = TrainingArguments(
     auto_find_batch_size=True,
     learning_rate=1e-3,
     logging_steps=1,
-    max_steps=1000,
+    max_steps=1,
     report_to="wandb",  ## can be wandb, but we are reporint to noe
 )
 
+compute_metrics = compute_metrics_equation(tokenizer)
+
+trainer_kwargs = {
+        'alpha': 0.5,
+        'output_rationale': True,
+        'model': model,
+        'args': peft_training_args,
+        'train_dataset': tokenize_datasets["train"],
+        'eval_dataset': {'test': tokenize_datasets["test"],},
+        'data_collator': data_collator,
+        'tokenizer': tokenizer,
+        'compute_metrics': compute_metrics,
+    }
+
 ## this is same except we are using PEFT model instead of regular
-peft_trainer = Trainer(
+peft_trainer = TaskPrefixTrainer(
     model=peft_model, args=peft_training_args, train_dataset=tokenize_datasets["train"]
 )
 
