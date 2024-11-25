@@ -71,7 +71,7 @@ def train_and_evaluate(model_name, dataset):
         learning_rate=1e-3,
         num_train_epochs=1,
         logging_steps=1,
-        max_steps=1,
+        max_steps=200,
         report_to="wandb",  ## can be wandb, but we are reporint to noe
     )
 
@@ -140,8 +140,8 @@ def train_and_evaluate(model_name, dataset):
 
     """### 2.3. Evaluate model quantitavely"""
 
-    dialogue = dataset["test"][:10]["dialogue"]
-    human_baseline_summaries = dataset["test"][:10]["summary"]
+    dialogue = dataset["test"][:100]["dialogue"]
+    human_baseline_summaries = dataset["test"][:100]["summary"]
 
     original_model_summaries = []
     peft_model_summaries = []

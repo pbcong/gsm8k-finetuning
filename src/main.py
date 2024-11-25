@@ -20,7 +20,7 @@ from peft import PeftModel
 """### Load Dataset and LLM"""
 
 huggingface_dataset_name = "knkarthick/dialogsum"
-model_name = "google/flan-t5-small"
+model_name = "google/flan-t5-xl"
 
 dataset = load_dataset(huggingface_dataset_name)
 
